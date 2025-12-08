@@ -25,7 +25,7 @@ typedef struct {
 // Re-seeds the thread-local generator from OS entropy.
 void zrand_init(void); 
 
-// The core g1eneration.
+// The core generation.
 uint32_t zrand_u32(void);
 uint64_t zrand_u64(void);
 float    zrand_f32(void); // 0.0f .. 1.0f (exclusive 1.0).
@@ -40,15 +40,18 @@ int32_t zrand_range(int32_t min, int32_t max);
 float   zrand_range_f(float min, float max);
 // Returns true "chance" percent of the time (0.0 to 1.0).
 bool    zrand_chance(double probability);
+// Returns a normally distributed double (Box-Muller).
+double  zrand_gaussian(double mean, double stddev);
 // Fills buffer with random bytes.
 void    zrand_bytes(void *buf, size_t len);
 // Fills buffer with random alphanumeric string (A-Z, a-z, 0-9).
 void    zrand_str(char *buf, size_t len);
-// Generates a UUID v4 string (37 chars including null: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx).
-// Check more here: https://en.wikipedia.org/wiki/Universally_unique_identifier
+// Generates a UUID v4 string.
 void    zrand_uuid(char *buf);
 // Shuffles an array (Fisher-Yates).
 void    zrand_shuffle(void *base, size_t nmemb, size_t size);
+// Returns pointer to a random element in the array.
+void* zrand_choice(void *base, size_t nmemb, size_t size);
 
 
 /* Instance API. */
@@ -59,19 +62,20 @@ uint32_t zrand_rng_u32(zrand_rng *rng);
 uint64_t zrand_rng_u64(zrand_rng *rng);
 int32_t  zrand_rng_range(zrand_rng *rng, int32_t min, int32_t max);
 double   zrand_rng_f64(zrand_rng *rng);
+double   zrand_rng_gaussian(zrand_rng *rng, double mean, double stddev);
 
 #ifdef __cplusplus
 }
 #endif
 
-/* ========================================================================= */
-/* C++ WRAPPER - [New Addition]                                              */
-/* ========================================================================= */
+/* The C++ wrapper. */
+
 #ifdef __cplusplus
 #include <string>
 #include <vector>
 #include <algorithm>
 #include <stdexcept>
+#include <limits> // Required for std::shuffle compatibility traits. We might modify this in the future.
 
 namespace z_rand 
 {
@@ -89,6 +93,9 @@ namespace z_rand
     // Inclusive [min, max].
     inline int32_t range(int32_t min, int32_t max) { return ::zrand_range(min, max); }
     inline float range(float min, float max) { return ::zrand_range_f(min, max); }
+    
+    // Normal distribution.
+    inline double gaussian(double mean, double stddev) { return ::zrand_gaussian(mean, stddev); }
 
     inline std::string uuid() 
     {
@@ -101,7 +108,6 @@ namespace z_rand
     {
         std::string s; 
         s.resize(len);
-        // zrand_str writes to the internal buffer.
         ::zrand_str(&s[0], len); 
         return s;
     }
@@ -111,12 +117,28 @@ namespace z_rand
     {
         if (!v.empty()) ::zrand_shuffle(v.data(), v.size(), sizeof(T));
     }
+    
+    // Pick random element (returns const ref).
+    template<typename T>
+    inline const T& choice(const std::vector<T>& v) 
+    {
+        // Warning: Calling choice on empty vector is undefined.
+        const void* ptr = ::zrand_choice((void*)v.data(), v.size(), sizeof(T));
+        return *(const T*)ptr;
+    }
 
     /* Generator Instance (for reproducible seeds). */
     class generator 
     {
         zrand_rng rng;
     public:
+        using result_type = uint32_t;
+        static constexpr result_type min() { return 0; }
+        static constexpr result_type max() { return 0xFFFFFFFF; }
+        
+        // Functor operator so this works with std::shuffle(..., gen).
+        result_type operator()() { return ::zrand_rng_u32(&rng); }
+
         // Auto-seed from global entropy.
         generator() 
         { 
@@ -129,11 +151,12 @@ namespace z_rand
             ::zrand_rng_init(&rng, seed, seq); 
         }
 
-        uint32_t u32() { return ::zrand_rng_u32(&rng); }
+        uint32_t u32() { return operator()(); }
         uint64_t u64() { return ::zrand_rng_u64(&rng); }
         double f64() { return ::zrand_rng_f64(&rng); }
         int32_t range(int32_t min, int32_t max) { return ::zrand_rng_range(&rng, min, max); }
         bool chance(double p) { return f64() < p; }
+        double gaussian(double m, double s) { return ::zrand_rng_gaussian(&rng, m, s); }
     };
 }
 #endif // __cplusplus
@@ -145,6 +168,11 @@ namespace z_rand
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h> // Needed for log/sqrt/cos, although we will make zmath.h some day.
+
+#ifndef ZRAND_PI
+#define ZRAND_PI 3.14159265358979323846
+#endif
 
 // OS Entropy Source, we need it for seeding.
 #ifdef _WIN32
@@ -197,8 +225,6 @@ void zrand_rng_init(zrand_rng *rng, uint64_t seed, uint64_t seq)
 
 /* Global state (thread local). */
 
-// Use C11 thread_local if available, otherwise just global.
-// Maybe we could add zthread.h over here.
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_THREADS__)
     #include <threads.h>
     #define ZRAND_TLS _Thread_local
@@ -227,41 +253,17 @@ static inline zrand_rng* zrand__get(void)
 void zrand_init(void) 
 {
     uint64_t seed = zrand__os_seed();
-    uint64_t seq = (uint64_t)(uintptr_t)&zrand_global; // Use address for sequence diversity
+    uint64_t seq = (uint64_t)(uintptr_t)&zrand_global; 
     zrand_rng_init(&zrand_global, seed, seq);
     zrand_seeded = true;
 }
 
-uint32_t zrand_u32(void) 
-{ 
-    return zrand__pcg32(zrand__get()); 
-}
-
-uint64_t zrand_u64(void) 
-{
-    zrand_rng *r = zrand__get();
-    return ((uint64_t)zrand__pcg32(r) << 32) | zrand__pcg32(r);
-}
-
-float zrand_f32(void) 
-{
-    return (zrand_u32() >> 8) * (1.0f / 16777216.0f); // 24-bit resolution.
-}
-
-double zrand_f64(void) 
-{
-    return (zrand_u64() >> 11) * (1.0 / 9007199254740992.0); // 53-bit resolution.
-}
-
-bool zrand_bool(void) 
-{
-    return (zrand_u32() & 1);
-}
-
-bool zrand_chance(double probability) 
-{
-    return zrand_f64() < probability;
-}
+uint32_t zrand_u32(void) { return zrand__pcg32(zrand__get()); }
+uint64_t zrand_u64(void) { zrand_rng *r = zrand__get(); return ((uint64_t)zrand__pcg32(r) << 32) | zrand__pcg32(r); }
+float zrand_f32(void) { return (zrand_u32() >> 8) * (1.0f / 16777216.0f); }
+double zrand_f64(void) { return (zrand_u64() >> 11) * (1.0 / 9007199254740992.0); }
+bool zrand_bool(void) { return (zrand_u32() & 1); }
+bool zrand_chance(double probability) { return zrand_f64() < probability; }
 
 /* Bias-free range. */
 int32_t zrand_range(int32_t min, int32_t max) 
@@ -271,12 +273,7 @@ int32_t zrand_range(int32_t min, int32_t max)
     uint32_t x, limit = (uint32_t)-1;
     uint32_t bucket_size = limit / range;
     uint32_t rejection_limit = bucket_size * range;
-    
-    do 
-    {
-        x = zrand_u32();
-    } while (x >= rejection_limit); // Retry if in the waste zone.
-    
+    do { x = zrand_u32(); } while (x >= rejection_limit); 
     return min + (int32_t)(x / bucket_size);
 }
 
@@ -285,24 +282,29 @@ float zrand_range_f(float min, float max)
     return min + zrand_f32() * (max - min);
 }
 
+static double zrand__box_muller(zrand_rng *rng, double mean, double stddev) 
+{
+    double u, v, s;
+    do 
+    { 
+        u = (zrand_rng_f64(rng) * 2) - 1; 
+        v = (zrand_rng_f64(rng) * 2) - 1; 
+        s = u*u + v*v; 
+    } while (s >= 1 || s == 0);
+    s = sqrt((-2.0 * log(s)) / s);
+    return mean + (stddev * u * s); // We discard v * s (could cache it, but keep state simple).
+}
+
+double zrand_gaussian(double mean, double stddev) { return zrand__box_muller(zrand__get(), mean, stddev); }
+double zrand_rng_gaussian(zrand_rng *r, double m, double s) { return zrand__box_muller(r, m, s); }
+
 /* Some utilities. */
 
 void zrand_bytes(void *buf, size_t len) 
 {
     uint8_t *p = (uint8_t*)buf;
-    // Fill in 4-byte chunks for speed.
-    while (len >= 4) 
-    {
-        *(uint32_t*)p = zrand_u32();
-        p += 4; len -= 4;
-    }
-    // Fill remainder.
-    if (len > 0) 
-    {
-        uint32_t rem = zrand_u32();
-        uint8_t *r = (uint8_t*)&rem;
-        while (len--) *p++ = *r++;
-    }
+    while (len >= 4) { *(uint32_t*)p = zrand_u32(); p += 4; len -= 4; }
+    if (len > 0) { uint32_t rem = zrand_u32(); uint8_t *r = (uint8_t*)&rem; while (len--) *p++ = *r++; }
 }
 
 static const char ZRAND_ALPHANUM[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -310,35 +312,19 @@ static const char ZRAND_ALPHANUM[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP
 void zrand_str(char *buf, size_t len) 
 {
     for (size_t i = 0; i < len; i++) 
-    {
-        // Simple modulo is fine here, strict uniformity less critical for generic ID strings.
-        // But I guess we could modify it if so.
         buf[i] = ZRAND_ALPHANUM[zrand_u32() % (sizeof(ZRAND_ALPHANUM) - 1)];
-    }
     buf[len] = '\0';
 }
 
 void zrand_uuid(char *buf) 
 {
-    // 8-4-4-4-12.
     static const char *hex = "0123456789abcdef";
-    uint8_t b[16];
-    zrand_bytes(b, 16);
-    
-    // Version 4 adjustments.
-    b[6] = (b[6] & 0x0F) | 0x40; // Version 4.
-    b[8] = (b[8] & 0x3F) | 0x80; // Variant 1.
-    
-    // Format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+    uint8_t b[16]; zrand_bytes(b, 16);
+    b[6] = (b[6] & 0x0F) | 0x40; b[8] = (b[8] & 0x3F) | 0x80;
     int k = 0;
-    for (int i = 0; i < 16; i++) 
-    {
-        if (i == 4 || i == 6 || i == 8 || i == 10) 
-        {
-            buf[k++] = '-';
-        }
-        buf[k++] = hex[(b[i] >> 4) & 0xF];
-        buf[k++] = hex[b[i] & 0xF];
+    for (int i = 0; i < 16; i++) {
+        if (i==4||i==6||i==8||i==10) buf[k++] = '-';
+        buf[k++] = hex[(b[i] >> 4) & 0xF]; buf[k++] = hex[b[i] & 0xF];
     }
     buf[k] = '\0';
 }
@@ -346,10 +332,7 @@ void zrand_uuid(char *buf)
 void zrand_shuffle(void *base, size_t nmemb, size_t size) 
 {
     if (nmemb <= 1) return;
-    char *arr = (char*)base;
-    // Fisher-Yates shuffle.
-    // We use a small buffer on stack for swapping.
-    char temp[256]; 
+    char *arr = (char*)base; char temp[256]; 
     char *swap_buf = (size > sizeof(temp)) ? (char*)malloc(size) : temp;
     if (!swap_buf) return;
 
@@ -358,14 +341,18 @@ void zrand_shuffle(void *base, size_t nmemb, size_t size)
         size_t j = zrand_range(0, (int32_t)i);
         if (i != j) 
         {
-            // We swap arr[i] and arr[j].
             memcpy(swap_buf, arr + i * size, size);
             memcpy(arr + i * size, arr + j * size, size);
             memcpy(arr + j * size, swap_buf, size);
         }
     }
-    
     if (swap_buf != temp) free(swap_buf);
+}
+
+void* zrand_choice(void *base, size_t nmemb, size_t size) 
+{
+    if (nmemb == 0) return NULL;
+    return (char*)base + (zrand_range(0, (int32_t)nmemb - 1) * size);
 }
 
 /* Instance Wrappers (Forwarding) */
@@ -377,10 +364,7 @@ int32_t zrand_rng_range(zrand_rng *rng, int32_t min, int32_t max)
     if (min >= max) return min;
     uint32_t range = (uint32_t)(max - min) + 1;
     uint32_t x, bucket = ((uint32_t)-1) / range;
-    do 
-    { 
-        x = zrand_rng_u32(rng); 
-    } while (x >= bucket * range);
+    do { x = zrand_rng_u32(rng); } while (x >= bucket * range);
     return min + (int32_t)(x / bucket);
 }
 
