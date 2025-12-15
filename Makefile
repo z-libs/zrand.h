@@ -12,7 +12,7 @@ get_zmath_h:
 
 clean:
 	@echo "Removing 'zmath.h'..."
-	rm zmath.h
+	@rm zmath.h
 
 test: get_zmath_h test_c test_cpp clean
 
