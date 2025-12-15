@@ -1,5 +1,6 @@
 
 #include <stdio.h>
+#define ZRAND_SHORT_NAMES
 #define ZRAND_IMPLEMENTATION
 #include "zrand.h"
 
@@ -12,7 +13,7 @@ int main(void)
     printf("Rolling d6 10 times: ");
     for(int i=0; i<10; i++) 
     {
-        printf("%d ", zrand_range(1, 6));
+        printf("%d ", rand_range(1, 6));
     }
     printf("\n");
 
@@ -21,7 +22,7 @@ int main(void)
     int iterations = 1000000;
     for(int i=0; i<iterations; i++) 
     {
-        if (zrand_bool()) heads++; else tails++;
+        if (rand_bool()) heads++; else tails++;
     }
     printf("Coin Flip (%d runs): Heads=%.2f%%, Tails=%.2f%%\n", 
            iterations, 
@@ -32,7 +33,7 @@ int main(void)
     printf("\nLoot Drop (5%% chance):\n");
     for(int i=1; i<=50; i++) 
     {
-        if (zrand_chance(0.05)) 
+        if (rand_chance(0.05)) 
         {
             printf("  Attempt %d: LEGENDARY ITEM DROP!\n", i);
         }
