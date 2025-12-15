@@ -16,6 +16,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+    
       - name: Run Unit Tests
         run: |
           echo "Running C and C++ Test Suites..."
