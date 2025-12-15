@@ -1,4 +1,6 @@
 
+#include <cstdint>
+#include <limits>
 #define ZRAND_IMPLEMENTATION
 #include "zrand.h"
 
@@ -6,6 +8,7 @@
 #include <vector>
 #include <cassert>
 #include <algorithm>
+#include <limits.h>
 
 #define TEST(name) printf("[TEST] %-35s", name);
 #define PASS() std::cout << "\033[0;32mPASS\033[0m\n";
@@ -17,7 +20,7 @@ void test_cpp_wrappers()
     z_rand::init();
     
     auto u = z_rand::u32();
-    assert(u >= 0);
+    assert(u <= std::numeric_limits<uint32_t>::max());
     
     auto f = z_rand::f64();
     assert(f >= 0.0 && f < 1.0);
