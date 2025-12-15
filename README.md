@@ -12,7 +12,8 @@ It also includes a robust **C++11 wrapper** (`z_rand` namespace) that integrates
 * **Cross-Platform Entropy**: Automatically seeds from the OS CSPRNG (`/dev/urandom` on Linux/macOS, `rand_s` on Windows).
 * **Thread Safety**: Uses thread-local state by default. No locks required for global generation.
 * **Deterministic Mode**: Supports explicit seed/sequence initialization for replay systems or procedural generation.
-* **Zero Dependencies**: Only standard C headers used.
+* **Gaussian Distribution**: Built-in Box-Muller transform for normal distributions.
+* **Zero Dependencies**: Standard C headers only. Can optionally use `zmath.h` for math functions to avoid linking `-lm`, or falls back to `<math.h>`.
 * **Header Only**: No linking required.
 
 ## Installation
@@ -25,31 +26,51 @@ It also includes a robust **C++11 wrapper** (`z_rand` namespace) that integrates
 #include "zrand.h"
 ```
 
+### Optional: zmath.h Integration
+
+If you want to avoid linking against the standard math library (`-lm`) or want a strictly freestanding environment, you can use **zmath.h**.
+The provided `Makefile` handles this automatically for testing:
+
+```bash
+# For running the tests. Will get and remove 'zmath.h'
+make test
+
+# Or if you just want to get 'zmath.h'
+make
+```
+
 ## Usage: C
 
 For C projects, you can use the global API for immediate results without managing state. The library handles seeding automatically.
 
+**Note:** You can use `#define ZRAND_SHORT_NAMES` to access functions as `rand_xyz` instead of `zrand_xyz`.
+
 ```c
-#include <stdio.h>
+#define ZRAND_IMPLEMENTATION
+#define ZRAND_SHORT_NAMES
 #include "zrand.h"
+#include <stdio.h>
 
 int main(void)
 {
     // Auto-seeds from OS entropy on first use. No srand() needed.
     
     // Basic generation.
-    printf("d20 Roll: %d\n", zrand_range(1, 20));
-    printf("Float (0..1): %.4f\n", zrand_f32());
+    printf("d20 Roll: %d\n", rand_range(1, 20));
+    printf("Float (0..1): %.4f\n", rand_f32());
 
     // Utilities.
-    if (zrand_chance(0.05)) 
+    if (rand_chance(0.05)) 
     {
         printf("Critical Hit! (5%% chance)\n");
     }
 
+    // Gaussian (mormal) distribution (Mean=0, StdDev=1).
+    printf("Normal Value: %.4f\n", rand_gaussian(0.0, 1.0));
+
     // UUID generation.
     char uuid[37];
-    zrand_uuid(uuid);
+    rand_uuid(uuid);
     printf("New ID: %s\n", uuid);
 
     return 0;
@@ -105,10 +126,12 @@ These functions use a high-performance **thread-local** generator instance. It i
 | `zrand_range(min, max)` | Returns `int32_t` in range `[min, max]` (inclusive). Bias-free. |
 | `zrand_range_f(min, max)` | Returns `float` in range `[min, max)`. |
 | `zrand_chance(probability)`| Returns `true` if a random check passes the given probability (0.0 to 1.0). |
+| `zrand_gaussian(mean, std)` | Returns a `double` following a normal distribution. |
 | `zrand_bytes(buf, len)` | Fills a buffer with random bytes. |
 | `zrand_str(buf, len)` | Fills a buffer with a random alphanumeric string (A-Z, a-z, 0-9). |
 | `zrand_uuid(buf)` | Generates a valid **UUID v4** string. `buf` must be at least 37 bytes. |
 | `zrand_shuffle(ptr, n, sz)` | Shuffles an array in-place using Fisher-Yates. |
+| `zrand_choice(ptr, n, sz)` | Returns a `void*` pointer to a random element in the array. |
 
 **Management**
 
@@ -133,6 +156,7 @@ Use these functions when you need reproducible sequences (e.g., for game replays
 | `zrand_rng_u64(rng)` | Helper to generate a 64-bit int from a specific instance. |
 | `zrand_rng_f64(rng)` | Helper to generate a double from a specific instance. |
 | `zrand_rng_range(rng, min, max)` | Helper to generate a range from a specific instance. |
+| `zrand_rng_gaussian(rng, m, s)` | Helper to generate a gaussian double from a specific instance. |
 
 ## API Reference (C++)
 
@@ -148,9 +172,11 @@ The C++ wrapper is defined in the **`z_rand`** namespace.
 | `z_rand::boolean()` | Returns boolean. |
 | `z_rand::chance(prob)` | Returns true based on probability. |
 | `z_rand::range(min, max)` | Returns value in range (overloaded for `int` and `float`). |
+| `z_rand::gaussian(mean, std)`| Returns normally distributed value. |
 | `z_rand::uuid()` | Returns a standard `std::string` containing a UUID v4. |
 | `z_rand::string(len)` | Returns a standard `std::string` of random alphanumeric characters. |
 | `z_rand::shuffle(vector)` | Shuffles a `std::vector` (or `z_vec::vector`) in-place. |
+| `z_rand::choice(vector)` | Returns a random element (const ref) from the vector. |
 
 **Deterministic Generator**
 
