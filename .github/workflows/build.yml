@@ -18,7 +18,12 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-    
+   
+      - name: Update z-core submodule
+        run: |
+          git submodule update --remote --merge
+          echo "Submodule updated to latest remote version."
+
       - name: Run Unit Tests
         run: |
           echo "Running C and C++ Test Suites..."
