@@ -16,9 +16,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
-   
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
       - name: Update z-core submodule
         run: |
           git submodule update --remote --merge
