@@ -1,0 +1,49 @@
+
+name: Build and Document
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+    
+      - name: Run Unit Tests
+        run: |
+          echo "Running C and C++ Test Suites..."
+          # This handles downloading dependencies via 'wget' automatically (per your Makefile)
+          make test || { echo "::error::Unit tests failed! Check the logs above."; exit 1; }
+
+      - name: Generate Documentation
+        run: |
+          echo "Regenerating README.md..."
+          make docs
+
+      - name: Commit and Push Docs
+        if: github.event_name == 'push' 
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add README.md
+          
+          # Check if README.md actually changed
+          if git diff --staged --quiet; then
+            echo "No changes to documentation detected."
+          else
+            echo "Documentation changed. Committing update..."
+            # [skip ci] prevents this commit from triggering another workflow run (infinite loop)
+            git commit -m "docs: auto-generate README.md [skip ci]"
+            git push
+          fi
